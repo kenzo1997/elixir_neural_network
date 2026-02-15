@@ -1,0 +1,87 @@
+# The directory Mix will write compiled artifacts to.
+/_build/
+
+# Dataset folder
+/dataset/
+
+# Model files
+mnist_model.term
+
+# If you run "mix test --cover", coverage assets end up here.
+/cover/
+
+# The directory Mix downloads your dependencies sources to.
+/deps/
+
+# Where third-party dependencies like ExDoc output generated docs.
+/doc/
+
+# Ignore .fetch files in case you like to edit your project deps locally.
+/.fetch
+
+# If the VM crashes, it generates a dump, let's ignore it too.
+erl_crash.dump
+
+# Also ignore archive artifacts (built via "mix archive.build").
+*.ez
+
+# Ignore package tarball (built via "mix hex.build").
+*.tar
+
+# Temporary files, for example, from tests.
+/tmp/
+
+# Ignore assets built by Webpack/esbuild (Phoenix projects)
+/priv/static/
+
+# Ignore uploaded files in development (Phoenix projects)
+/priv/uploads/
+
+# The secret key base used in production
+/config/*.secret.exs
+/config/prod.secret.exs
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Operating System files
+.DS_Store
+Thumbs.db
+
+# Editor and IDE files
+/.vscode/
+/.idea/
+*.swp
+*.swo
+*~
+.elixir_ls/
+.lexical/
+
+# NPM dependencies (if using Phoenix with npm)
+/assets/node_modules/
+/node_modules/
+
+# Ignore digested assets
+/priv/static/cache_manifest.json
+
+# Ignore database files (for SQLite)
+*.db
+*.db-shm
+*.db-wal
+
+# Ignore log files
+*.log
+
+# Ignore Dialyzer's PLT files
+/*.plt
+/*.plt.hash
+/priv/plts/
+
+# Sobelow security scan cache
+/.sobelow
+
+# Language Server Protocol (LSP) files
+/.elixir-ls/
+/.lexical/
