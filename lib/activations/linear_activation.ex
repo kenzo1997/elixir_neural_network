@@ -1,9 +1,11 @@
 defmodule LinearActivation do
-  def forward(value) do
+  import Nx.Defn
+
+  defn forward(value) do
     value
   end
 
-  def backward(dvalue, _z) do
+  defn backward(dvalue, _z) do
     dvalue
   end
 end

@@ -1,245 +1,251 @@
 defmodule NeuralNetwork do
   alias App
-  alias ReluActivation
-  alias LinearActivation
-  alias SoftmaxActivation
 
+  @input_size  784
+  @hidden_size 128
+  @output_size 10
+
+  # ── Initialization ──────────────────────────────────────────────
+
+  @doc """
+  Creates a randomly-initialized 2-layer network.
+
+  Returns a map:
+    %{w1: {784,128}, b1: {1,128}, w2: {128,10}, b2: {1,10}}
+  """
+  def init_layers(opts \\ []) do
+    input_size  = opts[:input_size]  || @input_size
+    hidden_size = opts[:hidden_size] || @hidden_size
+    output_size = opts[:output_size] || @output_size
+
+    %{
+      w1: Nx.random_uniform({input_size, hidden_size}, -0.005, 0.005, type: {:f, 32}),
+      b1: Nx.broadcast(0.0, {1, hidden_size}),
+      w2: Nx.random_uniform({hidden_size, output_size}, -0.005, 0.005, type: {:f, 32}),
+      b2: Nx.broadcast(0.0, {1, output_size})
+    }
+  end
+
+  # ── Forward pass (predict path) ─────────────────────────────────
+
+  @doc """
+  Runs forward propagation across all layers.
+  Input can be a single sample {784} or a batch {N, 784}.
+  Returns the softmax probability vector(s).
+  """
   def forward_network(layers, inputs) do
-    Enum.reduce(layers, {inputs, []}, fn layer, {curr_inputs, caches} ->
-      # Compute Z for each neuron
-      z_outputs =
-        Enum.zip(layer.weights, layer.bias)
-        |> Enum.map(fn {w, b} ->
-          z =
-            Enum.zip(curr_inputs, w)
-            |> Enum.map(fn {i, w} -> i * w end)
-            |> Enum.sum()
-
-          z + b
-        end)
-
-      # Apply activation
-      activations =
-        if layer.activation == SoftmaxActivation do
-          SoftmaxActivation.forward(z_outputs)
-        else
-          Enum.map(z_outputs, fn z -> layer.activation.forward(z) end)
-        end
-
-      # Keep cache for backprop
-      outputs = Enum.zip(z_outputs, activations)
-      cache = %{
-        outputs: outputs,
-        inputs: curr_inputs
-      }
-
-      {activations, caches ++ [cache]}
-    end)
+    # Ensure batch dimension
+    inputs = if Nx.rank(inputs) == 1, do: Nx.new_axis(inputs, 0), else: inputs
+    App.forward(inputs, layers.w1, layers.b1, layers.w2, layers.b2)
   end
 
-  def backward_network(layers, caches, outputs, targets) do
-    # Derivative of loss wrt final activations
-    # dvalues =
-    #   Enum.zip(outputs, targets)
-    #   |> Enum.map(fn {a, t} -> App.loss_derivative(a, t) end)
+  # ── Prediction ──────────────────────────────────────────────────
 
-    dvalues =
-      Enum.zip(outputs, targets)
-      |> Enum.map(fn {y, t} -> y - t end)
-
-    {gradients, _} =
-      layers
-      |> Enum.with_index()
-      |> Enum.reverse()
-      |> Enum.reduce({[], dvalues}, fn {layer, i}, {grads_acc, dvals} ->
-        cache = Enum.at(caches, i)
-
-        gradients =
-          if layer.activation == SoftmaxActivation do
-            App.backward_layer(dvals, cache.outputs, cache.inputs, LinearActivation)
-          else
-            App.backward_layer(dvals, cache.outputs, cache.inputs, layer.activation)
-          end
-
-        dz = Enum.map(gradients, fn {_dws, db} -> db end)
-        new_dvalues = App.propagate_dvalues(dz, layer.weights)
-
-        {[gradients | grads_acc], new_dvalues}
-      end)
-
-    gradients
-  end
-
-  def update_network(layers, gradients, learning_rate) do
-    Enum.zip(layers, gradients)
-    |> Enum.map(fn {layer, grads} ->
-      updated = App.update_layer(layer.weights, layer.bias, grads, learning_rate)
-
-      %{
-        layer |
-        weights: Enum.map(updated, fn {w, _} -> w end),
-        bias: Enum.map(updated, fn {_, b} -> b end)
-      }
-    end)
-  end
-
-  def random_matrix(rows, cols) do
-    for _ <- 1..rows do
-      for _ <- 1..cols do
-        (:rand.uniform() - 0.5) * 0.01
-      end
-    end
-  end
-  
-  def random_vector(size) do
-    for _ <- 1..size do
-      0.0
-    end
-  end
-
-  def load_model(path \\ "mnist_model.term") do
-    path
-    |> File.read!()
-    |> :erlang.binary_to_term()
-  end
-
+  @doc """
+  Predict the digit (0-9) for a single input tensor of shape {784}.
+  """
   def predict(layers, inputs) do
-    {outputs, _} = forward_network(layers, inputs)
-  
+    inputs = Nx.new_axis(inputs, 0)
+    outputs = forward_network(layers, inputs)
     outputs
-    |> Enum.with_index()
-    |> Enum.max_by(fn {v, _i} -> v end)
-    |> elem(1)
+    |> Nx.argmax(axis: -1)
+    |> Nx.squeeze(axes: [0])
+    |> Nx.to_number()
   end
 
+  @doc """
+  Predict with confidence score.
+
+  Returns: %{digit: integer, confidence: float}
+  """
   def predict_with_confidence(layers, inputs) do
-    {outputs, _} = forward_network(layers, inputs)
-  
-    {prob, index} =
+    inputs = Nx.new_axis(inputs, 0)
+    outputs = forward_network(layers, inputs) |> Nx.squeeze(axes: [0])
+    {prob, idx} =
       outputs
+      |> Nx.to_flat_list()
       |> Enum.with_index()
       |> Enum.max_by(fn {v, _i} -> v end)
-  
-    %{digit: index, confidence: prob}
+
+    %{digit: idx, confidence: prob}
   end
 
-  def start do
-    epochs = 50
-    learning_rate = 0.01
+  # ── Training ────────────────────────────────────────────────────
 
-    {_, _, _, images} =
-      MnistLoader.load_images("dataset/train-images.idx3-ubyte")
-  
-    {_, labels} =
-      MnistLoader.load_labels("dataset/train-labels.idx1-ubyte")
-  
-    dataset =
-     Enum.zip(
-       images,
-       Enum.map(labels, &MnistLoader.one_hot/1)
-     )
-     |> Enum.take(500)   # start small
+  @doc """
+  Train the network on MNIST data.
 
-    layers = [
-      %{
-        weights: random_matrix(128, 784),
-        bias: random_vector(128),
-        activation: ReluActivation
-      },
-      %{
-        weights: random_matrix(10, 128),
-        bias: random_vector(10),
-        activation: SoftmaxActivation
-      }
-    ]
+  Options:
+    :epochs       — training epochs       (default 30)
+    :batch_size   — mini-batch size       (default 64)
+    :learning_rate — SGD learning rate    (default 0.01)
+    :num_samples  — images to train on    (default 5000)
+    :shuffle      — shuffle each epoch    (default true)
+  """
+  def start(opts \\ []) do
+    epochs        = opts[:epochs]        || 30
+    batch_size    = opts[:batch_size]    || 64
+    learning_rate = opts[:learning_rate] || 0.01
+    num_samples   = opts[:num_samples]   || 5000
+    do_shuffle    = Keyword.get(opts, :shuffle, true)
 
+    IO.puts("Loading MNIST data...")
+    {num_total, _, _, images} = MnistLoader.load_images("dataset/train-images.idx3-ubyte")
+    {_, labels}               = MnistLoader.load_labels("dataset/train-labels.idx1-ubyte")
 
-    final_layers = Enum.reduce(1..epochs, layers, fn epoch, layers ->
-      {updated_layers, total_loss, total_correct} =
-        Enum.reduce(dataset, {layers, 0, 0}, fn {inputs, targets}, {curr_layers, loss_acc, correct_acc} ->
-          {outputs, caches} = forward_network(curr_layers, inputs)
-          loss = App.loss(outputs, targets)
-  
-          # --- Accuracy calculation ---
-          predicted =
-            outputs
-            |> Enum.with_index()
-            |> Enum.max_by(fn {v, _i} -> v end)
-            |> elem(1)
-  
-          actual =
-            targets
-            |> Enum.with_index()
-            |> Enum.max_by(fn {v, _i} -> v end)
-            |> elem(1)
-  
-          correct = if predicted == actual, do: 1, else: 0
-          # --- End accuracy calculation ---
-  
-          gradients = backward_network(curr_layers, caches, outputs, targets)
-          new_layers = update_network(curr_layers, gradients, learning_rate)
-  
-          {new_layers, loss_acc + loss, correct_acc + correct}
-        end)
-  
-      accuracy_percent = total_correct / length(dataset) * 100
-      IO.puts("Epoch #{epoch} | Loss: #{total_loss} | Accuracy: #{accuracy_percent}%")
-      updated_layers
-    end)
+    IO.puts("Total available: #{num_total} samples")
+    actual_samples = min(num_samples, num_total)
+    IO.puts("Using: #{actual_samples} samples")
 
-    IO.inspect(final_layers, label: "Final trained layers")
+    # Take a subset and convert labels to one-hot
+    images = Nx.slice(images,  [0, 0], [actual_samples, 784])
+    labels = MnistLoader.one_hot_tensor(
+               Nx.slice(labels, [0], [actual_samples]))
+          |> Nx.as_type({:f, 32})
 
-    File.write!(
-      "mnist_model.term",
-      :erlang.term_to_binary(final_layers)
-    )
+    # Initialize weights
+    layers = init_layers()
+    IO.puts("Network: #{@input_size} -> #{@hidden_size} -> #{@output_size}")
+    IO.puts("Batch size: #{batch_size}, Epochs: #{epochs}, LR: #{learning_rate}\n")
 
-    IO.puts("Model saved to mnist_model.term")
-  end
+    num_batches = div(actual_samples, batch_size)
 
-  def test_samples(layers, images, labels, count \\ 5) do
-    results =
-      images
-      |> Enum.zip(labels)
-      |> Enum.take(count)
-      |> Enum.with_index(1)
-      |> Enum.map(fn {{img, label}, index} ->
-        prediction = predict(layers, img)
-        correct? = prediction == label
-  
-        IO.puts("\nSample #{index}")
-        IO.puts("Predicted: #{prediction} | Actual: #{label} | Correct: #{correct?}")
-  
-        #print_image(img)
-  
-        correct?
+    final_layers =
+      Enum.reduce(1..epochs, layers, fn epoch, layers ->
+        # Shuffle dataset
+        {epoch_images, epoch_labels} =
+          if do_shuffle do
+            indices = Enum.shuffle(0..(actual_samples - 1))
+            idx_tensor = Nx.tensor(indices, type: {:s, 64})
+            {Nx.take(images, idx_tensor, axis: 0), Nx.take(labels, idx_tensor, axis: 0)}
+          else
+            {images, labels}
+          end
+
+        # Train on mini-batches
+        {layers, epoch_loss, epoch_correct} =
+          Enum.reduce(0..(num_batches - 1), {layers, 0.0, 0}, fn b, {layers, loss_acc, correct_acc} ->
+            start_idx = b * batch_size
+
+            batch_x = Nx.slice(epoch_images, [start_idx, 0], [batch_size, 784])
+            batch_y = Nx.slice(epoch_labels, [start_idx, 0], [batch_size, 10])
+
+            # Forward + loss
+            outputs = App.forward(batch_x, layers.w1, layers.b1, layers.w2, layers.b2)
+            loss     = App.cross_entropy(outputs, batch_y) |> Nx.to_number()
+
+            # Backward
+            {dw1, db1, dw2, db2} =
+              App.backward(batch_x, batch_y, layers.w1, layers.b1, layers.w2, layers.b2)
+
+            # Gradient descent update
+            layers = %{
+              w1: layers.w1 - learning_rate * dw1,
+              b1: layers.b1 - learning_rate * db1,
+              w2: layers.w2 - learning_rate * dw2,
+              b2: layers.b2 - learning_rate * db2
+            }
+
+            # Accuracy for this batch
+            preds  = Nx.argmax(outputs, axis: -1)
+            actual = Nx.argmax(batch_y, axis: -1)
+            correct = Nx.sum(Nx.equal(preds, actual)) |> Nx.to_number()
+
+            {layers, loss_acc + loss, correct_acc + correct}
+          end)
+
+        total_samples = num_batches * batch_size
+        avg_loss = epoch_loss / max(num_batches, 1)
+        accuracy = epoch_correct / max(total_samples, 1) * 100
+        IO.puts("Epoch #{epoch} | Loss: #{Float.round(avg_loss, 4)} | Accuracy: #{Float.round(accuracy, 2)}%")
+        layers
       end)
-  
-    total = length(results)
-    correct = Enum.count(results, & &1)
-    accuracy = correct / total * 100
-  
-    IO.puts("\n==============================")
-    IO.puts("#{correct}/#{total} correct. #{Float.round(accuracy, 2)}% accuracy")
-    IO.puts("==============================")
+
+    # Save model
+    save_model(final_layers)
+    IO.puts("\nModel saved to mnist_model.term")
+    final_layers
   end
 
+  # ── Testing ─────────────────────────────────────────────────────
+
+  @doc """
+  Run predictions on a set of test images and print results.
+  """
+  def test_samples(layers, images, labels, count \\ 10) do
+    images = Nx.slice(images,  [0, 0], [count, 784])
+    labels = Nx.slice(labels, [0],   [count])
+
+    outputs = forward_network(layers, images)
+    preds = Nx.argmax(outputs, axis: -1) |> Nx.to_flat_list()
+
+    actuals = Nx.to_flat_list(labels)
+
+    results =
+      Enum.zip(preds |> Enum.with_index(1), actuals)
+      |> Enum.map(fn {{pred, idx}, actual} ->
+        correct = pred == actual
+
+        IO.puts("Sample #{idx}: Predicted #{pred} | Actual #{actual} | #{if correct, do: "✓", else: "✗"}")
+        correct
+      end)
+
+    total   = length(results)
+    correct = Enum.count(results, & &1)
+    pct     = Float.round(correct / max(total, 1) * 100, 2)
+
+    IO.puts("\n#{correct}/#{total} correct — #{pct}% accuracy")
+  end
+
+  # ── Visualization ───────────────────────────────────────────────
+
+  @doc """
+  Render a 28×28 image as ASCII art in the terminal.
+  Input: {784} tensor or flat list of 784 pixel values in [0, 1].
+  """
   def print_image(image) do
-    image
+    pixels =
+      if is_struct(image, Nx.Tensor) do
+        Nx.to_flat_list(image)
+      else
+        image
+      end
+
+    pixels
     |> Enum.chunk_every(28)
     |> Enum.each(fn row ->
       row
-      |> Enum.map(fn pixel ->
+      |> Enum.map(fn p ->
         cond do
-          pixel > 0.7 -> "█"
-          pixel > 0.3 -> "▓"
-          pixel > 0.1 -> "▒"
-          pixel > 0.05 -> "."
+          p > 0.7 -> "█"
+          p > 0.3 -> "▓"
+          p > 0.1 -> "▒"
+          p > 0.05 -> "."
           true -> " "
         end
       end)
       |> Enum.join("")
       |> IO.puts()
     end)
+  end
+
+  # ── Persistence ─────────────────────────────────────────────────
+
+  @doc """
+  Save model layers to a binary file.
+  """
+  def save_model(layers, path \\ "mnist_model.term") do
+    binary = :erlang.term_to_binary(layers)
+    File.write!(path, binary)
+    IO.puts("Model saved to #{path}")
+  end
+
+  @doc """
+  Load model layers from a binary file.
+  """
+  def load_model(path \\ "mnist_model.term") do
+    path
+    |> File.read!()
+    |> :erlang.binary_to_term()
   end
 end

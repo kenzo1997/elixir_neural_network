@@ -1,89 +1,108 @@
 defmodule App do
-  defp inner(inputs, weights, bias, func) do
-    z =
-      Enum.zip(inputs, weights)
-      |> Enum.map(fn {i, w} -> i * w end)
-      |> Enum.sum()
-      + bias    # add bias after sum
-  
-    a = func.(z)  # apply activation
-    {z, a}        # return both
+  import Nx.Defn
+
+  @doc """
+  Complete forward pass from raw inputs to softmax probabilities.
+
+  Architecture: input -> ReLU hidden -> softmax output
+
+  Shapes:
+    inputs: {batch_size, 784}
+    w1:     {784, 128}
+    b1:     {1, 128}
+    w2:     {128, 10}
+    b2:     {1, 10}
+
+  Returns: {batch_size, 10} — per-class probabilities.
+  """
+  defn forward(inputs, w1, b1, w2, b2) do
+    z1 = Nx.dot(inputs, w1) + b1
+    a1 = Nx.max(z1, 0)
+
+    z2 = Nx.dot(a1, w2) + b2
+    stable_softmax(z2)
   end
 
-  def forward_pass(inputs, weights, bias, func) do
-    Enum.zip(weights, bias)
-    |> Enum.map(fn {w, b} ->
-      inner(inputs, w, b, func)
-    end)
+  @doc """
+  Numerically stable softmax.
+  Subtracts the per-row max before exponentiation to prevent overflow.
+  """
+  defn stable_softmax(logits) do
+    shifted = logits - Nx.reduce_max(logits, axes: [-1], keep_axes: true)
+    exp = Nx.exp(shifted)
+    exp / Nx.sum(exp, axes: [-1], keep_axes: true)
   end
 
-  def forward_network(inputs, weights_list, bias_list, activations) do
-    Enum.zip(weights_list, Enum.zip(bias_list, activations))
-    |> Enum.reduce(inputs, fn {layer_weights, {layer_bias, activation}}, acc ->
-      forward_pass(acc, layer_weights, layer_bias, activation) end) 
-    end
-  
-  def backward_layer(dvalues, layer_outputs, inputs, activation) do
-    Enum.zip(dvalues, layer_outputs)
-    |> Enum.map(fn {dvalue, {z, _a}} ->
-      backward_neuron(dvalue, z, inputs, activation)
-    end)
-  end
- 
-  def backward_neuron(dvalue, z, inputs, activation) do
-    dL_dz = activation.backward(dvalue, z)
+  @doc """
+  Cross-entropy loss averaged over the batch.
 
-    dL_dw = Enum.map(inputs, fn x -> x * dL_dz end)
-    dL_db = dL_dz
+  predictions: {batch_size, 10}
+  targets:     {batch_size, 10}  (one-hot)
 
-    {dL_dw, dL_db}
+  Returns: scalar
+  """
+  defn cross_entropy(predictions, targets) do
+    eps = 1.0e-15
+    clipped = Nx.max(predictions, eps)
+    -Nx.mean(Nx.sum(targets * Nx.log(clipped), axes: [-1]))
   end
 
-  def loss_derivative(predicted, target) do
-    2 * (predicted - target)
+  @doc """
+  Mean Squared Error loss averaged over the batch.
+  """
+  defn mse(predictions, targets) do
+    Nx.mean(Nx.pow(predictions - targets, 2))
   end
 
-  def update_layer(weights, biases, gradients, learning_rate) do
-    Enum.zip(weights, Enum.zip(biases, gradients))
-    |> Enum.map(fn {neuron_weights, {bias, {dws, db}}} ->
-      new_weights =
-        Enum.zip(neuron_weights, dws)
-        |> Enum.map(fn {w, dw} ->
-          w - learning_rate * dw
-        end)
+  @doc """
+  Manual backward pass — computes gradients for all parameters.
 
-      new_bias = bias - learning_rate * db
+  Derivation (combined softmax + cross-entropy):
+    dL/dz2 = softmax - targets            (per-sample, {batch, 10})
+    dL/dw2 = a1^T @ dL/dz2 / batch_size
+    dL/db2 = mean(dL/dz2, axis=0)
 
-      {new_weights, new_bias}
-    end)
+    dL/da1 = dL/dz2 @ w2^T
+    dL/dz1 = dL/da1 * (z1 > 0)           (ReLU backward)
+    dL/dw1 = inputs^T @ dL/dz1 / batch_size
+    dL/db1 = mean(dL/dz1, axis=0)
+
+  Returns: {dW1, dB1, dW2, dB2} — same shapes as the parameters.
+  """
+  defn backward(inputs, targets, w1, b1, w2, b2) do
+    # Forward pass (recomputed for the gradient tape)
+    z1 = Nx.dot(inputs, w1) + b1
+    a1 = Nx.max(z1, 0)
+
+    z2 = Nx.dot(a1, w2) + b2
+    softmax = stable_softmax(z2)
+
+    # --- Output layer gradients ---
+    dZ2 = softmax - targets
+
+    dW2 = Nx.dot(Nx.transpose(a1), dZ2)
+    dB2 = Nx.mean(dZ2, axes: [0], keep_axes: true)
+
+    # --- Hidden layer gradients ---
+    dA1 = Nx.dot(dZ2, Nx.transpose(w2))
+    relu_mask = Nx.as_type(Nx.greater(z1, 0), Nx.type(dA1))
+    dZ1 = dA1 * relu_mask
+
+    dW1 = Nx.dot(Nx.transpose(inputs), dZ1)
+    dB1 = Nx.mean(dZ1, axes: [0], keep_axes: true)
+
+    # Normalize by batch size
+    batch_size = Nx.axis_size(inputs, 0) |> Nx.as_type(Nx.type(dW1))
+    {dW1 / batch_size, dB1, dW2 / batch_size, dB2}
   end
 
-  def propagate_dvalues(dz, weights) do
-    0..(length(List.first(weights)) - 1)
-    |> Enum.map(fn j ->
-      Enum.zip(dz, weights)
-      |> Enum.reduce(0, fn {dz_k, w_k}, acc ->
-        acc + dz_k * Enum.at(w_k, j)
-      end)
-    end)
-  end
-
-  def loss(predicted, targets) do
-    Enum.zip(predicted, targets)
-    |> Enum.map(fn {p, t} -> (p - t) ** 2 end)
-    |> Enum.sum()
-  end
-
-  def cross_entropy_loss(predictions, targets) do
-    Enum.zip(predictions, targets)
-    |> Enum.map(fn {p, t} ->
-      # avoid log(0)
-      p = max(p, 1.0e-15)
-      -t * :math.log(p)
-    end)
-    |> Enum.sum()
+  @doc """
+  Gradient descent update for one layer's weights and bias.
+  """
+  def update_layer(weights, bias, dw, db, learning_rate) do
+    {
+      weights - learning_rate * dw,
+      bias - learning_rate * db
+    }
   end
 end
-
-
-#-------------------------------------------------------------------------------

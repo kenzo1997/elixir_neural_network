@@ -1,9 +1,11 @@
 defmodule StepActivation do
-  def forward(value) do
-    if value >= 0, do: 1, else: 0
+  import Nx.Defn
+
+  defn forward(value) do
+    Nx.as_type(Nx.greater_equal(value, 0), Nx.type(value))
   end
 
-  def backward(_dvalue, _z) do
-    0
+  defn backward(_dvalue, _z) do
+    0.0
   end
 end

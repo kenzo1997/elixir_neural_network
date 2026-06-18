@@ -1,9 +1,11 @@
 defmodule ReluActivation do
-  def forward(value) do
-    if value > 0, do: value, else: 0
+  import Nx.Defn
+
+  defn forward(value) do
+    Nx.max(value, 0)
   end
 
-  def backward(dvalue, z) do
-    if z > 0, do: dvalue, else: 0
+  defn backward(dvalue, z) do
+    dvalue * Nx.as_type(Nx.greater(z, 0), Nx.type(dvalue))
   end
 end

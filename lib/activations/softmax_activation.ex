@@ -1,15 +1,12 @@
 defmodule SoftmaxActivation do
-  # Forward takes entire vector of z values
-  def forward(z_values) do
-    exp_values =
-      Enum.map(z_values, fn z ->
-        :math.exp(z)
-      end)
+  import Nx.Defn
 
-    sum_exp = Enum.sum(exp_values)
-
-    Enum.map(exp_values, fn e ->
-      e / sum_exp
-    end)
+  defn forward(z_values) do
+    shifted = z_values - Nx.reduce_max(z_values, axes: [-1], keep_axes: true)
+    exp = Nx.exp(shifted)
+    exp / Nx.sum(exp, axes: [-1], keep_axes: true)
   end
+
+  # Softmax backward is combined with cross-entropy loss gradient in practice.
+  # Standalone: Jacobian matrix — not commonly used directly.
 end
